@@ -25,7 +25,7 @@ export const DATE_RANGES = [
 
 export function DashboardProvider({ children }) {
   const [addon,     setAddon]     = useState(ADDONS[0])
-  const [dateRange, setDateRange] = useState(DATE_RANGES[1])  // default: Last 7 days
+  const [dateRange, setDateRange] = useState(DATE_RANGES[4])  // default: Last 90 days
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [refreshTick, setRefreshTick] = useState(0)
   const refresh = () => setRefreshTick(t => t + 1)
