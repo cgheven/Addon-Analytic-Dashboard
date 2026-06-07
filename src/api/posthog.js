@@ -30,6 +30,12 @@ function pump() {
 
 const sleep = ms => new Promise(r => setTimeout(r, ms))
 
+// Error tracking so the UI can show a real error popup instead of silently
+// rendering empty/zero data (which looks like fake/"no data").
+let _errorCount = 0
+let _lastError = null
+export const getQueryErrorStats = () => ({ count: _errorCount, last: _lastError })
+
 async function request(query, attempt = 0) {
   try {
     const { data } = await api.post('/query/', { query: { kind: 'HogQLQuery', query } })
@@ -42,6 +48,10 @@ async function request(query, attempt = 0) {
       await sleep(waitMs)
       return request(query, attempt + 1)
     }
+    // Ultimately failed — record it (the dashboard reads this after each load).
+    const status = e.response?.status || 0
+    _errorCount++
+    _lastError = { status, rateLimited: status === 429, message: e.message }
     console.warn('PostHog query failed:', e.message)
     return []
   }

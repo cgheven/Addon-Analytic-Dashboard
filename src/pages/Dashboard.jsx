@@ -21,6 +21,35 @@ function Alert({ type, msg, onDismiss }) {
   )
 }
 
+// Fixed error popup — shown when PostHog queries fail (rate limit / network / etc.)
+// so the user never mistakes "couldn't load" for real empty/zero data.
+function ErrorToast({ error, onClose, onRetry }) {
+  if (!error) return null
+  const rate = error.rateLimited
+  const accent = rate ? '#f59e0b' : '#ef4444'
+  const title = rate ? 'Rate limited by PostHog (429)' : 'Could not load data'
+  const body = rate
+    ? 'Too many requests — some data did not load. It retries automatically; please wait a minute, refresh, or pick a smaller date range.'
+    : `Failed to reach PostHog${error.status ? ` (HTTP ${error.status})` : ''}. The numbers shown may be incomplete. Check your connection and API key, then retry.`
+  return (
+    <div style={{ position: 'fixed', top: 64, right: 16, zIndex: 300, width: 340, maxWidth: 'calc(100vw - 32px)',
+      background: 'var(--bg-600)', border: `1px solid ${accent}55`, borderLeft: `3px solid ${accent}`,
+      borderRadius: 10, padding: '12px 14px', boxShadow: '0 10px 30px rgba(0,0,0,.5)' }} className="ani-up">
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+        <AlertTriangle size={16} style={{ color: accent, flexShrink: 0, marginTop: 1 }} />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text-1)', marginBottom: 3 }}>{title}</div>
+          <div style={{ fontSize: 11, color: 'var(--text-2)', lineHeight: 1.5 }}>{body}</div>
+          <button onClick={onRetry} style={{ marginTop: 9, fontSize: 11, fontWeight: 500, padding: '5px 12px', background: accent, border: 'none', borderRadius: 6, color: '#0a0c12', cursor: 'pointer', fontFamily: 'DM Sans' }}>
+            Retry now
+          </button>
+        </div>
+        <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-3)', padding: 0, flexShrink: 0 }}><X size={14} /></button>
+      </div>
+    </div>
+  )
+}
+
 const GRIDS = {
   g4: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12 },
   g3: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 },
@@ -48,9 +77,11 @@ export default function Dashboard({ section }) {
   const [alerts, setAlerts]     = useState([])
   const [dismissed, setDismissed] = useState(new Set())
   const [showAllAssets, setShowAllAssets] = useState(false)
+  const [loadError, setLoadError] = useState(null)  // { status, rateLimited, message } | null
 
   const load = useCallback(async (silent = false) => {
     if (!silent) setLoading(true)
+    const errBefore = API.getQueryErrorStats().count
     try {
       const [kpis, topAssets, assetFmt, assetRes, dlTrend, dlCat, dlSub, fmt, res, dau, dow, licTrend, addonComp, funnel, catCvr, searches, catClicks, topFavs, favCat, favTrend, errors, errTrend, errAddon, rates, installs] = await Promise.all([
         API.getOverviewKPIs(addon.id, dateRange),
@@ -117,7 +148,14 @@ export default function Dashboard({ section }) {
       setAlerts(newAlerts)
 
       setD({ kpis, topAssets: parsedTopAssets, dlTrend: parsedDLTrend, dlCat: dlCat.map(r=>({name:r[0],n:Number(r[1])})), dlSub: dlSub.map(r=>({name:r[0],n:Number(r[1])})), fmt: fmt.map(r=>({name:r[0],n:Number(r[1])})), res: res.map(r=>({name:r[0],n:Number(r[1])})), dau: parsedDAU, dow: parsedDOW, licTrend: parsedLic, addonComp: parsedAddon, funnel: [ { name:'Viewed', value: funnel.views }, { name:'Downloaded', value: funnel.downloads }, { name:'Imported', value: funnel.imports }, { name:'Favourited', value: funnel.favs } ], catCvr: parsedCatCvr, searches: parsedSearch, catClicks: parsedClicks, favs: parsedFavs, favCat: parsedFavCat, favTrend: parsedFavTrend, dlErr: parsedDLErr, impErr: parsedImpErr, errTrend: parsedErrTrend, errAddon: parsedErrAddon, rates, installs: parsedInstalls })
-    } catch(e) { console.error(e) }
+
+      // Surface query failures as a real popup instead of showing misleading empty data
+      const stats = API.getQueryErrorStats()
+      setLoadError(stats.count > errBefore ? stats.last : null)
+    } catch(e) {
+      console.error(e)
+      setLoadError({ status: 0, rateLimited: false, message: e.message || 'Unexpected error while loading data' })
+    }
     setLoading(false)
   }, [addon.id, dateRange])
 
@@ -140,6 +178,7 @@ export default function Dashboard({ section }) {
 
   if (loading) return (
     <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <ErrorToast error={loadError} onClose={() => setLoadError(null)} onRetry={() => load()} />
       <div style={GRIDS.g4}>{[1,2,3,4].map(i => <SkeletonCard key={i} h={110} />)}</div>
       <SkeletonCard h={80} /><SkeletonCard h={200} />
       <div style={GRIDS.g3}>{[1,2,3].map(i => <SkeletonCard key={i} h={180} />)}</div>
@@ -150,6 +189,8 @@ export default function Dashboard({ section }) {
 
   return (
     <div style={{ padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 20 }} className="ani-fade">
+
+      <ErrorToast error={loadError} onClose={() => setLoadError(null)} onRetry={() => load()} />
 
       {/* ALERTS */}
       {visAlerts.length > 0 && (
