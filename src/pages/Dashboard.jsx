@@ -111,6 +111,13 @@ export default function Dashboard({ section }) {
         API.getNewInstalls(addon.id, dateRange),
       ])
 
+      // Did any query fail (e.g. rate limit)? If so, never overwrite good data with
+      // the empty/zero results — that would look like fake "0 / no data".
+      const stats = API.getQueryErrorStats()
+      const errored = stats.count > errBefore
+      setLoadError(errored ? stats.last : null)
+      if (errored && silent) { setLoading(false); return }  // keep last real data; just show the popup
+
       // Build per-asset format/resolution maps: { assetName: [{ label, n }] }
       const fmtMap = {}, resMap = {}
       assetFmt.forEach(r => { const k = r[0]; (fmtMap[k] = fmtMap[k] || []).push({ label: r[1] || 'unknown', n: Number(r[2]) }) })
@@ -149,9 +156,6 @@ export default function Dashboard({ section }) {
 
       setD({ kpis, topAssets: parsedTopAssets, dlTrend: parsedDLTrend, dlCat: dlCat.map(r=>({name:r[0],n:Number(r[1])})), dlSub: dlSub.map(r=>({name:r[0],n:Number(r[1])})), fmt: fmt.map(r=>({name:r[0],n:Number(r[1])})), res: res.map(r=>({name:r[0],n:Number(r[1])})), dau: parsedDAU, dow: parsedDOW, licTrend: parsedLic, addonComp: parsedAddon, funnel: [ { name:'Viewed', value: funnel.views }, { name:'Downloaded', value: funnel.downloads }, { name:'Imported', value: funnel.imports }, { name:'Favourited', value: funnel.favs } ], catCvr: parsedCatCvr, searches: parsedSearch, catClicks: parsedClicks, favs: parsedFavs, favCat: parsedFavCat, favTrend: parsedFavTrend, dlErr: parsedDLErr, impErr: parsedImpErr, errTrend: parsedErrTrend, errAddon: parsedErrAddon, rates, installs: parsedInstalls })
 
-      // Surface query failures as a real popup instead of showing misleading empty data
-      const stats = API.getQueryErrorStats()
-      setLoadError(stats.count > errBefore ? stats.last : null)
     } catch(e) {
       console.error(e)
       setLoadError({ status: 0, rateLimited: false, message: e.message || 'Unexpected error while loading data' })
@@ -204,10 +208,10 @@ export default function Dashboard({ section }) {
         <>
           <SectionHeader title="Overview" />
           <div style={GRIDS.g4}>
-            <KPICard label="Active users" value={d.kpis?.wau} icon={Users} iconBg="rgba(99,102,241,.15)" iconColor="#818cf8" trend="+12% vs last period" trendDir="up" delay={0} sparkData={d.dau?.slice(-8).map(r=>r.n)} />
-            <KPICard label="Downloads" value={d.kpis?.downloads} icon={Download} iconBg="rgba(34,197,94,.12)" iconColor="#22c55e" trend="+8% vs last period" trendDir="up" delay={.05} sparkData={d.dlTrend?.slice(-8).map(r=>r.n)} />
-            <KPICard label="Favourites" value={d.kpis?.favourites} icon={Heart} iconBg="rgba(245,158,11,.12)" iconColor="#f59e0b" trend="+5% vs last period" trendDir="up" delay={.1} sparkData={d.favTrend?.slice(-8).map(r=>r.n)} />
-            <KPICard label="Addon installs" value={d.kpis?.installs} icon={Package} iconBg="rgba(56,189,248,.12)" iconColor="#38bdf8" trend="new installs" trendDir="nu" delay={.15} sparkData={d.installs?.slice(-8).map(r=>r.n)} />
+            <KPICard label="Active users" value={d.kpis?.wau} icon={Users} iconBg="rgba(99,102,241,.15)" iconColor="#818cf8" trend={d.kpis?.trends?.wau?.label} trendDir={d.kpis?.trends?.wau?.dir} delay={0} sparkData={d.dau?.slice(-8).map(r=>r.n)} />
+            <KPICard label="Downloads" value={d.kpis?.downloads} icon={Download} iconBg="rgba(34,197,94,.12)" iconColor="#22c55e" trend={d.kpis?.trends?.downloads?.label} trendDir={d.kpis?.trends?.downloads?.dir} delay={.05} sparkData={d.dlTrend?.slice(-8).map(r=>r.n)} />
+            <KPICard label="Favourites" value={d.kpis?.favourites} icon={Heart} iconBg="rgba(245,158,11,.12)" iconColor="#f59e0b" trend={d.kpis?.trends?.favourites?.label} trendDir={d.kpis?.trends?.favourites?.dir} delay={.1} sparkData={d.favTrend?.slice(-8).map(r=>r.n)} />
+            <KPICard label="Addon installs" value={d.kpis?.installs} icon={Package} iconBg="rgba(56,189,248,.12)" iconColor="#38bdf8" trend={d.kpis?.trends?.installs?.label} trendDir={d.kpis?.trends?.installs?.dir} delay={.15} sparkData={d.installs?.slice(-8).map(r=>r.n)} />
             <KPICard label="Error rate" value={d.kpis?.errorRate} icon={AlertTriangle} iconBg="rgba(239,68,68,.12)" iconColor="#ef4444" format="decimal" trend={parseFloat(d.kpis?.errorRate) > 1 ? 'Spike detected' : 'Stable'} trendDir={parseFloat(d.kpis?.errorRate) > 1 ? 'down' : 'up'} delay={.2} />
           </div>
 
@@ -459,18 +463,23 @@ export default function Dashboard({ section }) {
               <CardTitle>System health</CardTitle>
               <div className="health-grid" style={{ marginBottom: 14 }}>
                 {[
-                  { label: 'Download', val: d.rates?.download, ok: parseFloat(d.rates?.download) > 95 },
-                  { label: 'Import',   val: d.rates?.import,   ok: parseFloat(d.rates?.import) > 95 },
-                  { label: 'Search',   val: '100.0', ok: true },
-                  { label: 'License',  val: '99.1',  ok: true },
-                ].map((h, i) => (
-                  <div key={i} className="h-card">
-                    <div className="h-dot" style={{ background: h.ok ? 'var(--green)' : 'var(--red)' }} />
-                    <div><div className="h-label">{h.label}</div><div className="h-val" style={{ color: h.ok ? 'var(--green)' : 'var(--red)' }}>{h.val || '—'}%</div></div>
-                  </div>
-                ))}
+                  { label: 'Download', val: d.rates?.download },
+                  { label: 'Import',   val: d.rates?.import },
+                  { label: 'Search',   val: d.rates?.search },
+                  { label: 'License',  val: d.rates?.license },
+                ].map((h, i) => {
+                  const hasVal = h.val != null
+                  const ok = hasVal && parseFloat(h.val) > 95
+                  const color = !hasVal ? 'var(--text-3)' : ok ? 'var(--green)' : 'var(--red)'
+                  return (
+                    <div key={i} className="h-card">
+                      <div className="h-dot" style={{ background: color }} />
+                      <div><div className="h-label">{h.label}</div><div className="h-val" style={{ color }}>{hasVal ? `${h.val}%` : '—'}</div></div>
+                    </div>
+                  )
+                })}
               </div>
-              <div style={{ fontSize: 10, color: 'var(--text-3)', marginBottom: 6 }}>Error trend — 14 days</div>
+              <div style={{ fontSize: 10, color: 'var(--text-3)', marginBottom: 6 }}>Error trend — {dateRange.short || dateRange.label}</div>
               <AreaChart data={d.errTrend || []} color="#ef4444" label="Errors" height={120} />
             </div>
             <div className="card ani-up s1">

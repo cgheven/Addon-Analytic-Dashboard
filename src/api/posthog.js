@@ -75,24 +75,64 @@ function timeClause(range) {
 const where = (addon, range) =>
   `properties.addon_name = '${addon}' AND ${timeClause(range)}`
 
-export async function getOverviewKPIs(addon, days) {
+// Current window + the equal-length window immediately before it (for real
+// "vs previous period" deltas) + a union window covering both (for the WHERE).
+function dayWindows(range) {
+  if (range && range.start && range.end) {
+    const start = new Date(`${range.start}T00:00:00`)
+    const end   = new Date(`${range.end}T23:59:59`)
+    const lenMs = Math.max(86400000, end - start)
+    const prevStart = new Date(start.getTime() - lenMs).toISOString().slice(0, 10)
+    return {
+      cur:   `timestamp >= toDateTime('${range.start} 00:00:00') AND timestamp <= toDateTime('${range.end} 23:59:59')`,
+      prev:  `timestamp >= toDateTime('${prevStart} 00:00:00') AND timestamp < toDateTime('${range.start} 00:00:00')`,
+      union: `timestamp >= toDateTime('${prevStart} 00:00:00') AND timestamp <= toDateTime('${range.end} 23:59:59')`,
+    }
+  }
+  const d = (range && typeof range === 'object' ? range.days : range) || 1
+  return {
+    cur:   `timestamp >= now() - interval ${d} day`,
+    prev:  `timestamp >= now() - interval ${2 * d} day AND timestamp < now() - interval ${d} day`,
+    union: `timestamp >= now() - interval ${2 * d} day`,
+  }
+}
+
+// Real % change vs the previous equal-length period (null when there's no baseline).
+function delta(cur, prev) {
+  if (prev === 0 && cur === 0) return null
+  if (prev === 0) return { label: 'new', dir: 'up' }
+  const p = Math.round(((cur - prev) / prev) * 100)
+  return { label: `${p >= 0 ? '+' : ''}${p}% vs prev period`, dir: p > 0 ? 'up' : p < 0 ? 'down' : 'nu' }
+}
+
+export async function getOverviewKPIs(addon, range) {
+  const w = dayWindows(range)
   const rows = await hql(`
     SELECT
-      uniqIf(distinct_id, event = 'session_started') as wau,
-      countIf(event = 'asset_downloaded') as downloads,
-      countIf(event = 'favourite_added') as favourites,
-      countIf(event IN ('download_failed','import_failed')) as errors,
-      countIf(event IN ('asset_downloaded','asset_imported')) as total_actions,
-      countIf(event = 'addon_installed') as installs
-    FROM events WHERE ${where(addon, days)}
+      uniqIf(distinct_id, event = 'session_started' AND ${w.cur}) as wau,
+      uniqIf(distinct_id, event = 'session_started' AND ${w.prev}) as wau_prev,
+      countIf(event = 'asset_downloaded' AND ${w.cur}) as downloads,
+      countIf(event = 'asset_downloaded' AND ${w.prev}) as downloads_prev,
+      countIf(event = 'favourite_added' AND ${w.cur}) as favourites,
+      countIf(event = 'favourite_added' AND ${w.prev}) as favourites_prev,
+      countIf(event = 'addon_installed' AND ${w.cur}) as installs,
+      countIf(event = 'addon_installed' AND ${w.prev}) as installs_prev,
+      countIf(event IN ('download_failed','import_failed') AND ${w.cur}) as errors,
+      countIf(event IN ('asset_downloaded','asset_imported') AND ${w.cur}) as total_actions
+    FROM events WHERE properties.addon_name = '${addon}' AND ${w.union}
   `)
-  const r = rows[0] || [0,0,0,0,1,0]
+  const r = rows[0] || []
+  const n = i => Number(r[i] || 0)
+  const wau = n(0), downloads = n(2), favourites = n(4), installs = n(6), errors = n(8), actions = n(9)
   return {
-    wau:        Number(r[0]),
-    downloads:  Number(r[1]),
-    favourites: Number(r[2]),
-    errorRate:  r[4] > 0 ? ((Number(r[3]) / Number(r[4])) * 100).toFixed(1) : '0.0',
-    installs:   Number(r[5]),
+    wau, downloads, favourites, installs,
+    errorRate: actions > 0 ? ((errors / actions) * 100).toFixed(1) : '0.0',
+    trends: {
+      wau:        delta(wau, n(1)),
+      downloads:  delta(downloads, n(3)),
+      favourites: delta(favourites, n(5)),
+      installs:   delta(installs, n(7)),
+    },
   }
 }
 
@@ -320,15 +360,23 @@ export async function getSuccessRates(addon, days) {
       countIf(event = 'asset_downloaded') as dl_ok,
       countIf(event = 'download_failed') as dl_fail,
       countIf(event = 'asset_imported') as imp_ok,
-      countIf(event = 'import_failed') as imp_fail
+      countIf(event = 'import_failed') as imp_fail,
+      countIf(event IN ('search_performed','asset_searched')) as s_total,
+      countIf(event IN ('search_performed','asset_searched') AND toFloatOrDefault(toString(properties.results_count), 0) > 0) as s_ok,
+      countIf(event = 'license_activated') as lic_act,
+      countIf(event = 'license_expired') as lic_exp
     FROM events WHERE ${where(addon, days)}
   `)
-  const r = rows[0] || [0,0,0,0]
-  const dlOk = Number(r[0]), dlFail = Number(r[1])
-  const impOk = Number(r[2]), impFail = Number(r[3])
+  const r = rows[0] || []
+  const n = i => Number(r[i] || 0)
+  // null when there's no data for that metric — the UI renders "—" instead of a fake number.
+  const rate = (ok, total) => total > 0 ? ((ok / total) * 100).toFixed(1) : null
+  const dlOk = n(0), dlFail = n(1), impOk = n(2), impFail = n(3)
   return {
-    download: dlOk + dlFail > 0 ? ((dlOk / (dlOk + dlFail)) * 100).toFixed(1) : '100.0',
-    import:   impOk + impFail > 0 ? ((impOk / (impOk + impFail)) * 100).toFixed(1) : '100.0',
+    download: rate(dlOk, dlOk + dlFail),
+    import:   rate(impOk, impOk + impFail),
+    search:   rate(n(5), n(4)),            // % of searches that returned results
+    license:  rate(n(6), n(6) + n(7)),     // activated / (activated + expired)
   }
 }
 
