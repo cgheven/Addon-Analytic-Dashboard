@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Users, Download, Heart, AlertTriangle, TrendingUp, TrendingDown, X, AlertCircle, Package, ChevronDown } from 'lucide-react'
+import { Users, Download, Heart, AlertTriangle, TrendingUp, TrendingDown, X, AlertCircle, Package, ChevronDown, Rocket, CheckCircle2, Clock, RefreshCw, ArrowRight } from 'lucide-react'
 import { useDashboard } from '../context/DashboardContext'
 import { KPICard, SectionHeader, CardTitle, SkeletonCard, HBar, FunnelViz, PctList } from '../components/ui/index.jsx'
 import { AreaChart, BarChart, DonutChart } from '../components/charts/index.jsx'
@@ -70,6 +70,26 @@ const labelAddon = raw => {
 const labelAddonRows = rows =>
   rows.map(r => ({ name: labelAddon(r[0]), n: Number(r[1]) })).sort((a, b) => b.n - a.n)
 
+// Version helpers — normalize (strip leading "v", trim) and semver-compare so
+// "1.2" / "v1.2.0" group together and sort correctly. Empty → "unknown".
+const normVer = v => String(v || '').trim().replace(/^v/i, '') || 'unknown'
+const cmpVer = (a, b) => {
+  const pa = normVer(a).split('.').map(n => parseInt(n, 10) || 0)
+  const pb = normVer(b).split('.').map(n => parseInt(n, 10) || 0)
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i] || 0) - (pb[i] || 0)
+    if (d) return d
+  }
+  return 0
+}
+
+// Stale-while-revalidate cache: keyed by addon + date range. Lets switching addons /
+// sections / date ranges back show instantly while a silent refresh runs in the
+// background. Survives re-renders (module scope), cleared on full page reload.
+const dashCache = new Map()
+const cacheKeyOf = (addon, range) =>
+  `${addon.id}|${range.short || ''}|${range.start || ''}|${range.end || ''}`
+
 export default function Dashboard({ section }) {
   const { addon, dateRange, refreshTick } = useDashboard()
   const [d, setD]               = useState({})
@@ -80,35 +100,76 @@ export default function Dashboard({ section }) {
   const [loadError, setLoadError] = useState(null)  // { status, rateLimited, message } | null
 
   const load = useCallback(async (silent = false) => {
-    if (!silent) setLoading(true)
+    const cacheKey = cacheKeyOf(addon, dateRange)
+    const cached = dashCache.get(cacheKey)
+
+    // Stale-while-revalidate: if we've loaded this addon+range before, show it
+    // instantly and refresh silently in the background (no skeleton, no flash).
+    if (cached && !silent) {
+      setD(cached.d); setAlerts(cached.alerts || []); setLoading(false)
+    } else if (!silent) {
+      setLoading(true)
+    }
+    const showingCached = !!cached && !silent
+    const effSilent = silent || showingCached  // don't clobber good data on a bg refresh
     const errBefore = API.getQueryErrorStats().count
+
     try {
-      const [kpis, topAssets, assetFmt, assetRes, dlTrend, dlCat, dlSub, fmt, res, dau, dow, licTrend, addonComp, funnel, catCvr, searches, catClicks, topFavs, favCat, favTrend, errors, errTrend, errAddon, rates, installs] = await Promise.all([
-        API.getOverviewKPIs(addon.id, dateRange),
-        API.getTopAssets(addon.id, dateRange),
-        API.getAssetFormatBreakdown(addon.id, dateRange),
-        API.getAssetResolutionBreakdown(addon.id, dateRange),
-        API.getDownloadTrend(addon.id, dateRange),
-        API.getDownloadsByCategory(addon.id, dateRange),
-        API.getDownloadsBySubcategory(addon.id, dateRange),
-        API.getFormatDistribution(addon.id, dateRange),
-        API.getResolutionDistribution(addon.id, dateRange),
-        API.getDAUTrend(addon.id, dateRange),
-        API.getSessionsByDOW(addon.id, dateRange),
-        API.getLicenseTrend(addon.id, dateRange),
-        API.getAddonComparison(dateRange),
-        API.getConversionFunnel(addon.id, dateRange),
-        API.getCategoryConversion(addon.id, dateRange),
-        API.getSearchQueries(addon.id, dateRange),
-        API.getCategoryClicks(addon.id, dateRange),
-        API.getTopFavourites(addon.id, dateRange),
-        API.getFavouritesByCategory(addon.id, dateRange),
-        API.getFavouriteTrend(addon.id, dateRange),
-        API.getErrors(addon.id, dateRange),
-        API.getErrorTrend(addon.id, dateRange),
-        API.getErrorsByAddon(dateRange),
-        API.getSuccessRates(addon.id, dateRange),
-        API.getNewInstalls(addon.id, dateRange),
+      // Fire ALL queries at once — the limiter (8 concurrent) schedules them. The 7
+      // "above-the-fold" queries are created first so they get the first slots.
+      const P = {
+        kpis:      API.getOverviewKPIs(addon.id, dateRange),
+        topAssets: API.getTopAssets(addon.id, dateRange),
+        assetFmt:  API.getAssetFormatBreakdown(addon.id, dateRange),
+        assetRes:  API.getAssetResolutionBreakdown(addon.id, dateRange),
+        dlTrend:   API.getDownloadTrend(addon.id, dateRange),
+        dlCat:     API.getDownloadsByCategory(addon.id, dateRange),
+        dlSub:     API.getDownloadsBySubcategory(addon.id, dateRange),
+        fmt:       API.getFormatDistribution(addon.id, dateRange),
+        res:       API.getResolutionDistribution(addon.id, dateRange),
+        dau:       API.getDAUTrend(addon.id, dateRange),
+        dow:       API.getSessionsByDOW(addon.id, dateRange),
+        licTrend:  API.getLicenseTrend(addon.id, dateRange),
+        addonComp: API.getAddonComparison(dateRange),
+        funnel:    API.getConversionFunnel(addon.id, dateRange),
+        catCvr:    API.getCategoryConversion(addon.id, dateRange),
+        searches:  API.getSearchQueries(addon.id, dateRange),
+        catClicks: API.getCategoryClicks(addon.id, dateRange),
+        topFavs:   API.getTopFavourites(addon.id, dateRange),
+        favCat:    API.getFavouritesByCategory(addon.id, dateRange),
+        favTrend:  API.getFavouriteTrend(addon.id, dateRange),
+        errors:    API.getErrors(addon.id, dateRange),
+        errTrend:  API.getErrorTrend(addon.id, dateRange),
+        errAddon:  API.getErrorsByAddon(dateRange),
+        rates:     API.getSuccessRates(addon.id, dateRange),
+        installs:  API.getNewInstalls(addon.id, dateRange),
+        verDist:   API.getVersionDistribution(addon.id, dateRange),
+        adoption:  API.getUpdateAdoption(addon.id, dateRange),
+        updTrend:  API.getUpdateTrend(addon.id, dateRange),
+        verMig:    API.getVersionMigration(addon.id, dateRange),
+        latestVer: API.getLatestTargetVersion(addon.id, dateRange),
+      }
+
+      // PHASE 1 — reveal above-the-fold (KPIs, top assets, category) the moment the
+      // first wave returns, so the page appears in ~1s instead of waiting for all 30.
+      if (!effSilent) {
+        const [k, ta, af, ar, dt, dc, ds] = await Promise.all([P.kpis, P.topAssets, P.assetFmt, P.assetRes, P.dlTrend, P.dlCat, P.dlSub])
+        const fm = {}, rm = {}
+        af.forEach(r => { const key = r[0]; (fm[key] = fm[key] || []).push({ label: r[1] || 'unknown', n: Number(r[2]) }) })
+        ar.forEach(r => { const key = r[0]; (rm[key] = rm[key] || []).push({ label: r[1] || 'unknown', n: Number(r[2]) }) })
+        setD(prev => ({
+          ...prev, kpis: k,
+          topAssets: ta.map(r => ({ name: r[0], cat: r[1], sub: r[2], downloads: Number(r[3]), views: Number(r[4]), imports: Number(r[5]), favs: Number(r[6]), cvr: r[4] > 0 ? ((Number(r[3]) / Number(r[4])) * 100).toFixed(0) : 0, fmt: fm[r[0]] || [], res: rm[r[0]] || [] })),
+          dlTrend: dt.map(r => ({ day: r[0], n: Number(r[1]) })),
+          dlCat: dc.map(r => ({ name: r[0], n: Number(r[1]) })),
+          dlSub: ds.map(r => ({ name: r[0], n: Number(r[1]) })),
+        }))
+        setLoading(false)
+      }
+
+      // PHASE 2 — await the full set, then commit atomically (+ cache it).
+      const [kpis, topAssets, assetFmt, assetRes, dlTrend, dlCat, dlSub, fmt, res, dau, dow, licTrend, addonComp, funnel, catCvr, searches, catClicks, topFavs, favCat, favTrend, errors, errTrend, errAddon, rates, installs, verDist, adoption, updTrend, verMig, latestVer] = await Promise.all([
+        P.kpis, P.topAssets, P.assetFmt, P.assetRes, P.dlTrend, P.dlCat, P.dlSub, P.fmt, P.res, P.dau, P.dow, P.licTrend, P.addonComp, P.funnel, P.catCvr, P.searches, P.catClicks, P.topFavs, P.favCat, P.favTrend, P.errors, P.errTrend, P.errAddon, P.rates, P.installs, P.verDist, P.adoption, P.updTrend, P.verMig, P.latestVer,
       ])
 
       // Did any query fail (e.g. rate limit)? If so, never overwrite good data with
@@ -116,7 +177,7 @@ export default function Dashboard({ section }) {
       const stats = API.getQueryErrorStats()
       const errored = stats.count > errBefore
       setLoadError(errored ? stats.last : null)
-      if (errored && silent) { setLoading(false); return }  // keep last real data; just show the popup
+      if (errored && effSilent) { setLoading(false); return }  // keep last real / cached data
 
       // Build per-asset format/resolution maps: { assetName: [{ label, n }] }
       const fmtMap = {}, resMap = {}
@@ -147,14 +208,43 @@ export default function Dashboard({ section }) {
       const parsedErrAddon = labelAddonRows(errAddon)
       const parsedInstalls = installs.map(r => ({ day: r[0]?.slice(5) || r[0], n: Number(r[1]) }))
 
+      // ── Update / version analytics ──
+      // Collapse versions that normalize to the same value (e.g. "1.2" + "v1.2.0").
+      const verAgg = {}
+      verDist.forEach(r => { const k = normVer(r[0]); verAgg[k] = (verAgg[k] || 0) + Number(r[1]) })
+      const verRows = Object.entries(verAgg).map(([name, n]) => ({ name, n }))
+      const activeVerUsers = verRows.reduce((s, v) => s + v.n, 0)
+      // "Latest" = the version most recently pushed via prompts; fall back to the
+      // highest version anyone is actually running.
+      const latest = normVer(latestVer) !== 'unknown'
+        ? normVer(latestVer)
+        : verRows.map(v => v.name).sort(cmpVer).slice(-1)[0] || null
+      const onLatest = latest ? (verAgg[latest] || 0) : 0
+      const pctOnLatest = activeVerUsers > 0 ? Math.round((onLatest / activeVerUsers) * 100) : 0
+      const laggards = Math.max(0, activeVerUsers - onLatest)
+      const verSorted = verRows.sort((a, b) => cmpVer(b.name, a.name))  // newest first
+      const updTrendRows = updTrend.map(r => ({ day: r[0], n: Number(r[1]) }))
+      const totalUpdates = updTrendRows.reduce((s, r) => s + r.n, 0)
+      const verMigRows = verMig.map(r => ({ frm: normVer(r[0]), to: normVer(r[1]), n: Number(r[2]) }))
+      const updates = {
+        ...adoption, latest, onLatest, pctOnLatest, laggards,
+        activeVerUsers, totalUpdates,
+        verDist: verSorted, updTrend: updTrendRows, verMig: verMigRows,
+        updVsNot: [
+          { name: 'Updated', n: adoption.updated },
+          { name: 'Not updated', n: adoption.notUpdated },
+        ],
+      }
+
       const zeroSearches = parsedSearch.filter(s => s.zero > 0)
       const newAlerts = []
       if (parseFloat(kpis.errorRate) > 1) newAlerts.push({ id:'err', type:'danger',  msg:`Error rate at ${kpis.errorRate}% — download failures detected. Check errors section.` })
       if (zeroSearches.length)            newAlerts.push({ id:'gap', type:'warning', msg:`${zeroSearches.length} searches return zero results — content gap detected.` })
       if (parsedTopAssets.length)         newAlerts.push({ id:'top', type:'success', msg:`Top asset: "${parsedTopAssets[0]?.name}" with ${parsedTopAssets[0]?.downloads} downloads.` })
+      const finalD = { kpis, topAssets: parsedTopAssets, dlTrend: parsedDLTrend, dlCat: dlCat.map(r=>({name:r[0],n:Number(r[1])})), dlSub: dlSub.map(r=>({name:r[0],n:Number(r[1])})), fmt: fmt.map(r=>({name:r[0],n:Number(r[1])})), res: res.map(r=>({name:r[0],n:Number(r[1])})), dau: parsedDAU, dow: parsedDOW, licTrend: parsedLic, addonComp: parsedAddon, funnel: [ { name:'Viewed', value: funnel.views }, { name:'Downloaded', value: funnel.downloads }, { name:'Imported', value: funnel.imports }, { name:'Favourited', value: funnel.favs } ], catCvr: parsedCatCvr, searches: parsedSearch, catClicks: parsedClicks, favs: parsedFavs, favCat: parsedFavCat, favTrend: parsedFavTrend, dlErr: parsedDLErr, impErr: parsedImpErr, errTrend: parsedErrTrend, errAddon: parsedErrAddon, rates, installs: parsedInstalls, updates }
       setAlerts(newAlerts)
-
-      setD({ kpis, topAssets: parsedTopAssets, dlTrend: parsedDLTrend, dlCat: dlCat.map(r=>({name:r[0],n:Number(r[1])})), dlSub: dlSub.map(r=>({name:r[0],n:Number(r[1])})), fmt: fmt.map(r=>({name:r[0],n:Number(r[1])})), res: res.map(r=>({name:r[0],n:Number(r[1])})), dau: parsedDAU, dow: parsedDOW, licTrend: parsedLic, addonComp: parsedAddon, funnel: [ { name:'Viewed', value: funnel.views }, { name:'Downloaded', value: funnel.downloads }, { name:'Imported', value: funnel.imports }, { name:'Favourited', value: funnel.favs } ], catCvr: parsedCatCvr, searches: parsedSearch, catClicks: parsedClicks, favs: parsedFavs, favCat: parsedFavCat, favTrend: parsedFavTrend, dlErr: parsedDLErr, impErr: parsedImpErr, errTrend: parsedErrTrend, errAddon: parsedErrAddon, rates, installs: parsedInstalls })
+      setD(finalD)
+      if (!errored) dashCache.set(cacheKey, { d: finalD, alerts: newAlerts })  // cache for instant SWR
 
     } catch(e) {
       console.error(e)
@@ -181,7 +271,7 @@ export default function Dashboard({ section }) {
   const visAlerts = alerts.filter(a => !dismissed.has(a.id))
 
   if (loading) return (
-    <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 16 }}>
+    <div className="page" style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 16 }}>
       <ErrorToast error={loadError} onClose={() => setLoadError(null)} onRetry={() => load()} />
       <div style={GRIDS.g4}>{[1,2,3,4].map(i => <SkeletonCard key={i} h={110} />)}</div>
       <SkeletonCard h={80} /><SkeletonCard h={200} />
@@ -192,7 +282,7 @@ export default function Dashboard({ section }) {
   const showSection = id => !section || section === id || section === 'overview'
 
   return (
-    <div style={{ padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 20 }} className="ani-fade">
+    <div style={{ padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 20 }} className="ani-fade page">
 
       <ErrorToast error={loadError} onClose={() => setLoadError(null)} onRetry={() => load()} />
 
@@ -327,6 +417,104 @@ export default function Dashboard({ section }) {
           </div>
         </>
       )}
+
+      {/* ══ UPDATE ANALYTICS (addon_opened / update_prompt_shown / update_completed) ══ */}
+      {(section === 'updates' || !section) && (() => {
+        const u = d.updates || {}
+        const hasData = (u.activeVerUsers || 0) + (u.totalUpdates || 0) + (u.prompted || 0) > 0
+        return (
+          <>
+            <SectionHeader title="Update analytics" subtitle={u.latest ? `Latest release · v${u.latest}` : undefined} />
+            {!hasData ? (
+              <div className="card" style={{ textAlign: 'center', color: 'var(--text-3)', fontSize: 12, padding: '28px 0' }}>
+                No update data yet — waiting for <b style={{ color: 'var(--text-2)' }}>addon_opened</b>, <b style={{ color: 'var(--text-2)' }}>update_prompt_shown</b> and <b style={{ color: 'var(--text-2)' }}>update_completed</b> events in this date range.
+              </div>
+            ) : (
+              <>
+                <div style={GRIDS.g4}>
+                  <KPICard label="Update adoption" value={u.rate ?? 0} format="percent" icon={Rocket}
+                    iconBg="rgba(99,102,241,.15)" iconColor="#818cf8"
+                    trend={u.prompted ? `${u.updated} of ${u.prompted} prompted updated` : 'No update prompts yet'}
+                    trendDir={u.rate >= 50 ? 'up' : 'down'} delay={0} />
+                  <KPICard label="On latest version" value={u.pctOnLatest ?? 0} format="percent" icon={CheckCircle2}
+                    iconBg="rgba(34,197,94,.12)" iconColor="#22c55e"
+                    trend={`${u.onLatest || 0} of ${u.activeVerUsers || 0} active users`}
+                    trendDir={u.pctOnLatest >= 60 ? 'up' : 'down'} delay={.05} />
+                  <KPICard label="Pending updates" value={u.laggards ?? 0} icon={Clock}
+                    iconBg="rgba(245,158,11,.12)" iconColor="#f59e0b"
+                    trend={u.laggards > 0 ? 'still on older versions' : 'everyone up to date'}
+                    trendDir={u.laggards > 0 ? 'down' : 'up'} delay={.1} />
+                  <KPICard label="Updates completed" value={u.totalUpdates ?? 0} icon={RefreshCw}
+                    iconBg="rgba(56,189,248,.12)" iconColor="#38bdf8"
+                    trend={`${u.activeVerUsers || 0} active users`} trendDir="up" delay={.15}
+                    sparkData={u.updTrend?.slice(-8).map(r => r.n)} />
+                </div>
+
+                <div className="grid-21">
+                  <div className="card ani-up">
+                    <CardTitle badge="update_completed">Update adoption trend</CardTitle>
+                    <AreaChart data={u.updTrend || []} color="#6366f1" label="Updates" height={240} />
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                    <div className="card ani-up s1">
+                      <CardTitle badge="prompted users">Updated vs not</CardTitle>
+                      <DonutChart data={u.updVsNot || []} height={170} />
+                    </div>
+                    <div className="card ani-up s2">
+                      <CardTitle badge="prompt → completed">Adoption funnel</CardTitle>
+                      <FunnelViz data={[
+                        { name: 'Prompted', value: u.prompted || 0 },
+                        { name: 'Updated', value: u.updated || 0 },
+                      ]} />
+                    </div>
+                  </div>
+                </div>
+
+                <div style={GRIDS.g2}>
+                  <div className="card ani-up">
+                    <CardTitle badge="addon_opened · latest launch">Version distribution</CardTitle>
+                    {(u.verDist || []).length ? (u.verDist).map((v, i) => {
+                      const max = Math.max(...u.verDist.map(x => x.n), 1)
+                      const pct = ((v.n / max) * 100).toFixed(0)
+                      const share = u.activeVerUsers ? ((v.n / u.activeVerUsers) * 100).toFixed(0) : 0
+                      const isLatest = v.name === u.latest
+                      return (
+                        <div key={i} className="addon-bar-row">
+                          <div className="row-top">
+                            <span className="name">v{v.name}{isLatest && <span className="badge badge-g" style={{ marginLeft: 6 }}>latest</span>}</span>
+                            <span className="val" style={{ color: isLatest ? '#22c55e' : '#38bdf8' }}>{v.n.toLocaleString()}</span>
+                          </div>
+                          <div className="track"><div className="fill ani-bar" style={{ width: `${pct}%`, background: isLatest ? '#22c55e' : '#38bdf8', animationDelay: `${i * .05}s` }} /></div>
+                          <div className="share">{share}% of users</div>
+                        </div>
+                      )
+                    }) : <div style={{ color: 'var(--text-3)', fontSize: 11, textAlign: 'center', padding: '20px 0' }}>No version data</div>}
+                  </div>
+                  <div className="card ani-up s1">
+                    <CardTitle badge="update_completed">Version migration paths</CardTitle>
+                    <div style={{ overflowX: 'auto' }}>
+                      <table className="data-table">
+                        <thead><tr><th>From</th><th style={{ width: 24 }}></th><th>To</th><th className="t-r">Users</th></tr></thead>
+                        <tbody>
+                          {(u.verMig || []).map((m, i) => (
+                            <tr key={i}>
+                              <td style={{ color: 'var(--text-3)' }}>v{m.frm}</td>
+                              <td style={{ color: 'var(--text-3)' }}><ArrowRight size={11} /></td>
+                              <td className="t-name">v{m.to}{m.to === u.latest && <span className="badge badge-g" style={{ marginLeft: 6 }}>latest</span>}</td>
+                              <td className="t-r" style={{ color: 'var(--text-1)', fontWeight: 500 }}>{m.n.toLocaleString()}</td>
+                            </tr>
+                          ))}
+                          {!u.verMig?.length && <tr><td colSpan={4} style={{ textAlign: 'center', color: 'var(--text-3)', padding: '16px 0', fontSize: 11 }}>No update migrations yet</td></tr>}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+              </>
+            )}
+          </>
+        )
+      })()}
 
       {/* ══ S4: USERS ══ */}
       {(section === 'users' || !section) && (

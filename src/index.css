@@ -166,14 +166,24 @@ body {
   .grid-21 { grid-template-columns: 1fr; }
 }
 
-.topbar { padding: 0 16px; }
+/* overflow MUST stay visible — the addon/date dropdowns are absolutely
+   positioned children of the topbar; any overflow:auto/hidden here clips them
+   and they appear to "drop behind" the page content on mobile. */
+.topbar { padding: 0 16px; overflow: visible; }
+
+/* Centre + cap content width on large/ultra-wide screens so charts and tables
+   don't stretch edge-to-edge and become unreadable. */
+.page { width: 100%; max-width: 1600px; margin: 0 auto; }
+
+@media (min-width: 1900px) {
+  .page { max-width: 1760px; }
+}
 
 @media (max-width: 768px) {
   .card { padding: 12px; }
   .kpi-card { padding: 12px 14px; }
   .kpi-val { font-size: 22px; }
   .data-table { font-size: 10px; }
-  /* compact topbar; allow horizontal scroll if controls still overflow on tiny screens */
-  .topbar { padding: 0 10px; gap: 8px; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
-  .topbar::-webkit-scrollbar { display: none; }
+  /* compact topbar; keep overflow visible so dropdowns render above content */
+  .topbar { padding: 0 10px; gap: 8px; }
 }

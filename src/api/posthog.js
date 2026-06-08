@@ -11,8 +11,10 @@ const api = axios.create({
 })
 
 // Concurrency limiter — PostHog rate-limits the query API, and the dashboard fires
-// ~25 queries per load. Firing them all at once triggers HTTP 429. Cap to a few at a time.
-const MAX_CONCURRENT = 4
+// ~30 queries per load. Firing them all at once triggers HTTP 429. Cap how many run
+// in parallel (8 is well under the limit thanks to the 429 backoff below, and roughly
+// halves wall-clock load time vs the old cap of 4).
+const MAX_CONCURRENT = 8
 let active = 0
 const queue = []
 function schedule(fn) {
@@ -385,5 +387,85 @@ export async function getNewInstalls(addon, days) {
     SELECT toStartOfWeek(timestamp) as week, count() as n
     FROM events WHERE event = 'addon_installed' AND ${where(addon, days)}
     GROUP BY week ORDER BY week ASC
+  `)
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Update / version analytics
+// Events (same schema across all addons):
+//   addon_opened        { version }                    — fires on every launch
+//   update_prompt_shown { from_version, to_version }   — fires when update detected
+//   update_completed    { old_version, new_version }   — fires when version changed
+// ──────────────────────────────────────────────────────────────────────────
+
+// Current version of every active user = the version on their LATEST launch
+// (argMax over addon_opened), grouped → "who is on what version" distribution.
+export async function getVersionDistribution(addon, range) {
+  return hql(`
+    SELECT version, count() as users FROM (
+      SELECT distinct_id, argMax(toString(properties.version), timestamp) as version
+      FROM events
+      WHERE event = 'addon_opened' AND ${where(addon, range)}
+        AND toString(properties.version) != ''
+      GROUP BY distinct_id
+    ) GROUP BY version ORDER BY users DESC LIMIT 25
+  `)
+}
+
+// The most recently pushed update target — the latest to_version users were
+// prompted with. Used as "the current release" T for adoption math.
+export async function getLatestTargetVersion(addon, range) {
+  const rows = await hql(`
+    SELECT argMax(toString(properties.to_version), timestamp) as latest
+    FROM events
+    WHERE event = 'update_prompt_shown' AND ${where(addon, range)}
+      AND toString(properties.to_version) != ''
+  `)
+  return rows[0]?.[0] || null
+}
+
+// Update adoption — of the DISTINCT users who were shown an update prompt in the
+// window, how many also COMPLETED an update? Set intersection on distinct_id
+// (a user can relaunch/prompt many times, so count distinct, never raw events).
+export async function getUpdateAdoption(addon, range) {
+  const rows = await hql(`
+    SELECT count() as prompted, countIf(c > 0) as updated FROM (
+      SELECT distinct_id,
+        countIf(event = 'update_prompt_shown') as p,
+        countIf(event = 'update_completed')    as c
+      FROM events
+      WHERE event IN ('update_prompt_shown','update_completed') AND ${where(addon, range)}
+      GROUP BY distinct_id
+      HAVING p > 0
+    )
+  `)
+  const r = rows[0] || [0, 0]
+  const prompted = Number(r[0] || 0), updated = Number(r[1] || 0)
+  return {
+    prompted, updated,
+    notUpdated: Math.max(0, prompted - updated),
+    rate: prompted > 0 ? Math.round((updated / prompted) * 100) : null,
+  }
+}
+
+// Total updates completed per day — the adoption velocity line.
+export async function getUpdateTrend(addon, range) {
+  return hql(`
+    SELECT toDate(timestamp) as day, count() as n
+    FROM events WHERE event = 'update_completed' AND ${where(addon, range)}
+    GROUP BY day ORDER BY day ASC
+  `)
+}
+
+// Version migration matrix — from_version → to_version, distinct users who made
+// that jump (the real upgrade paths users are taking).
+export async function getVersionMigration(addon, range) {
+  return hql(`
+    SELECT toString(properties.old_version) as frm,
+           toString(properties.new_version) as too,
+           uniq(distinct_id) as users
+    FROM events WHERE event = 'update_completed' AND ${where(addon, range)}
+      AND toString(properties.new_version) != ''
+    GROUP BY frm, too ORDER BY users DESC LIMIT 12
   `)
 }

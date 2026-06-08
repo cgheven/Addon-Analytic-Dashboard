@@ -1,10 +1,11 @@
-import { LayoutDashboard, Users, Download, Trophy, ArrowLeftRight, Search, Heart, AlertTriangle, Sparkles, Settings, X, BarChart2 } from 'lucide-react'
+import { LayoutDashboard, Users, Download, Trophy, ArrowLeftRight, Search, Heart, AlertTriangle, RefreshCw, Settings, X, BarChart2 } from 'lucide-react'
 import { useDashboard } from '../../context/DashboardContext'
 
 const NAV = [
   { id: 'overview',    icon: LayoutDashboard, label: 'Overview'         },
   { id: 'users',       icon: Users,           label: 'Users'            },
   { id: 'downloads',   icon: Download,        label: 'Downloads'        },
+  { id: 'updates',     icon: RefreshCw,       label: 'Updates'          },
   { id: 'assets',      icon: Trophy,          label: 'Assets'           },
   { id: 'conversion',  icon: ArrowLeftRight,  label: 'Conversion'       },
   { id: 'search',      icon: Search,          label: 'Search'           },

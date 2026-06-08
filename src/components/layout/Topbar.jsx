@@ -130,12 +130,12 @@ export function Topbar({ onMenu }) {
         )}
       </div>
 
-      <button style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, padding: '5px 12px', background: '#6366f1', border: 'none', borderRadius: 8, color: '#fff', cursor: 'pointer', fontFamily: 'DM Sans', fontWeight: 500, flexShrink: 0 }}>
+      <button className="hidden sm:flex" style={{ alignItems: 'center', gap: 5, fontSize: 11, padding: '5px 12px', background: '#6366f1', border: 'none', borderRadius: 8, color: '#fff', cursor: 'pointer', fontFamily: 'DM Sans', fontWeight: 500, flexShrink: 0 }}>
         <Download size={13} />
         <span className="hidden sm:inline">Export</span>
       </button>
 
-      <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-3)', position: 'relative', padding: 4, flexShrink: 0 }}>
+      <button className="hidden sm:block" style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-3)', position: 'relative', padding: 4, flexShrink: 0 }}>
         <Bell size={17} />
         <span style={{ position: 'absolute', top: 3, right: 3, width: 6, height: 6, background: 'var(--red)', borderRadius: '50%' }} className="ani-pulse" />
       </button>
