@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Users, Download, Heart, AlertTriangle, TrendingUp, TrendingDown, X, AlertCircle, Package, ChevronDown, Rocket, CheckCircle2, Clock, RefreshCw, ArrowRight } from 'lucide-react'
+import { Users, Download, Heart, AlertTriangle, TrendingUp, TrendingDown, X, AlertCircle, Package, ChevronDown, Rocket, CheckCircle2, Clock, RefreshCw, ArrowRight, Activity } from 'lucide-react'
 import { useDashboard } from '../context/DashboardContext'
 import { KPICard, SectionHeader, CardTitle, SkeletonCard, HBar, FunnelViz, PctList } from '../components/ui/index.jsx'
-import { AreaChart, BarChart, DonutChart } from '../components/charts/index.jsx'
+import { AreaChart, BarChart, DonutChart, MultiLineChart } from '../components/charts/index.jsx'
 import * as API from '../api/posthog'
 
 function Alert({ type, msg, onDismiss }) {
@@ -129,7 +129,8 @@ export default function Dashboard({ section }) {
         res:       API.getResolutionDistribution(addon.id, dateRange),
         dau:       API.getDAUTrend(addon.id, dateRange),
         dow:       API.getSessionsByDOW(addon.id, dateRange),
-        licTrend:  API.getLicenseTrend(addon.id, dateRange),
+        acctTrend: API.getAccountTrend(addon.id, dateRange),
+        planDist:  API.getPlanDistribution(addon.id, dateRange),
         addonComp: API.getAddonComparison(dateRange),
         funnel:    API.getConversionFunnel(addon.id, dateRange),
         catCvr:    API.getCategoryConversion(addon.id, dateRange),
@@ -143,6 +144,7 @@ export default function Dashboard({ section }) {
         errAddon:  API.getErrorsByAddon(dateRange),
         rates:     API.getSuccessRates(addon.id, dateRange),
         installs:  API.getNewInstalls(addon.id, dateRange),
+        opensTrend: API.getOpensTrend(addon.id, dateRange),
         verDist:   API.getVersionDistribution(addon.id, dateRange),
         adoption:  API.getUpdateAdoption(addon.id, dateRange),
         updTrend:  API.getUpdateTrend(addon.id, dateRange),
@@ -168,8 +170,8 @@ export default function Dashboard({ section }) {
       }
 
       // PHASE 2 — await the full set, then commit atomically (+ cache it).
-      const [kpis, topAssets, assetFmt, assetRes, dlTrend, dlCat, dlSub, fmt, res, dau, dow, licTrend, addonComp, funnel, catCvr, searches, catClicks, topFavs, favCat, favTrend, errors, errTrend, errAddon, rates, installs, verDist, adoption, updTrend, verMig, latestVer] = await Promise.all([
-        P.kpis, P.topAssets, P.assetFmt, P.assetRes, P.dlTrend, P.dlCat, P.dlSub, P.fmt, P.res, P.dau, P.dow, P.licTrend, P.addonComp, P.funnel, P.catCvr, P.searches, P.catClicks, P.topFavs, P.favCat, P.favTrend, P.errors, P.errTrend, P.errAddon, P.rates, P.installs, P.verDist, P.adoption, P.updTrend, P.verMig, P.latestVer,
+      const [kpis, topAssets, assetFmt, assetRes, dlTrend, dlCat, dlSub, fmt, res, dau, dow, acctTrend, planDist, addonComp, funnel, catCvr, searches, catClicks, topFavs, favCat, favTrend, errors, errTrend, errAddon, rates, installs, opensTrend, verDist, adoption, updTrend, verMig, latestVer] = await Promise.all([
+        P.kpis, P.topAssets, P.assetFmt, P.assetRes, P.dlTrend, P.dlCat, P.dlSub, P.fmt, P.res, P.dau, P.dow, P.acctTrend, P.planDist, P.addonComp, P.funnel, P.catCvr, P.searches, P.catClicks, P.topFavs, P.favCat, P.favTrend, P.errors, P.errTrend, P.errAddon, P.rates, P.installs, P.opensTrend, P.verDist, P.adoption, P.updTrend, P.verMig, P.latestVer,
       ])
 
       // Did any query fail (e.g. rate limit)? If so, never overwrite good data with
@@ -194,7 +196,8 @@ export default function Dashboard({ section }) {
       const parsedDLTrend = dlTrend.map(r => ({ day: r[0], n: Number(r[1]) }))
       const parsedDAU     = dau.map(r => ({ day: r[0], n: Number(r[1]) }))
       const parsedDOW     = dow.map(r => ({ dow: String(r[0]), n: Number(r[1]) }))
-      const parsedLic     = licTrend.map(r => ({ week: r[0]?.slice(5) || r[0], activated: Number(r[1]), expired: Number(r[2]) }))
+      const parsedAcct    = acctTrend.map(r => ({ week: r[0]?.slice(5) || r[0], signups: Number(r[1]), logins: Number(r[2]) }))
+      const parsedPlan    = planDist.map(r => ({ name: r[0], n: Number(r[1]) }))
       const parsedAddon   = labelAddonRows(addonComp)
       const parsedCatCvr  = catCvr.map(r => ({ cat: r[0], views: Number(r[1]), downloads: Number(r[2]), cvr: r[1] > 0 ? ((Number(r[2]) / Number(r[1])) * 100).toFixed(0) : 0 }))
       const parsedSearch  = searches.map(r => ({ q: r[0], n: Number(r[1]), zero: Number(r[2]) }))
@@ -207,6 +210,7 @@ export default function Dashboard({ section }) {
       const parsedErrTrend = errTrend.map(r => ({ day: r[0], n: Number(r[1]) }))
       const parsedErrAddon = labelAddonRows(errAddon)
       const parsedInstalls = installs.map(r => ({ day: r[0]?.slice(5) || r[0], n: Number(r[1]) }))
+      const parsedOpens    = (opensTrend || []).map(r => ({ day: String(r[0] || '').slice(5) || r[0], n: Number(r[1]) }))
 
       // ── Update / version analytics ──
       // Collapse versions that normalize to the same value (e.g. "1.2" + "v1.2.0").
@@ -241,7 +245,7 @@ export default function Dashboard({ section }) {
       if (parseFloat(kpis.errorRate) > 1) newAlerts.push({ id:'err', type:'danger',  msg:`Error rate at ${kpis.errorRate}% — download failures detected. Check errors section.` })
       if (zeroSearches.length)            newAlerts.push({ id:'gap', type:'warning', msg:`${zeroSearches.length} searches return zero results — content gap detected.` })
       if (parsedTopAssets.length)         newAlerts.push({ id:'top', type:'success', msg:`Top asset: "${parsedTopAssets[0]?.name}" with ${parsedTopAssets[0]?.downloads} downloads.` })
-      const finalD = { kpis, topAssets: parsedTopAssets, dlTrend: parsedDLTrend, dlCat: dlCat.map(r=>({name:r[0],n:Number(r[1])})), dlSub: dlSub.map(r=>({name:r[0],n:Number(r[1])})), fmt: fmt.map(r=>({name:r[0],n:Number(r[1])})), res: res.map(r=>({name:r[0],n:Number(r[1])})), dau: parsedDAU, dow: parsedDOW, licTrend: parsedLic, addonComp: parsedAddon, funnel: [ { name:'Viewed', value: funnel.views }, { name:'Downloaded', value: funnel.downloads }, { name:'Imported', value: funnel.imports }, { name:'Favourited', value: funnel.favs } ], catCvr: parsedCatCvr, searches: parsedSearch, catClicks: parsedClicks, favs: parsedFavs, favCat: parsedFavCat, favTrend: parsedFavTrend, dlErr: parsedDLErr, impErr: parsedImpErr, errTrend: parsedErrTrend, errAddon: parsedErrAddon, rates, installs: parsedInstalls, updates }
+      const finalD = { kpis, topAssets: parsedTopAssets, dlTrend: parsedDLTrend, dlCat: dlCat.map(r=>({name:r[0],n:Number(r[1])})), dlSub: dlSub.map(r=>({name:r[0],n:Number(r[1])})), fmt: fmt.map(r=>({name:r[0],n:Number(r[1])})), res: res.map(r=>({name:r[0],n:Number(r[1])})), dau: parsedDAU, dow: parsedDOW, acctTrend: parsedAcct, planDist: parsedPlan, addonComp: parsedAddon, funnel: [ { name:'Viewed', value: funnel.views }, { name:'Downloaded', value: funnel.downloads }, { name:'Imported', value: funnel.imports }, { name:'Favourited', value: funnel.favs } ], catCvr: parsedCatCvr, searches: parsedSearch, catClicks: parsedClicks, favs: parsedFavs, favCat: parsedFavCat, favTrend: parsedFavTrend, dlErr: parsedDLErr, impErr: parsedImpErr, errTrend: parsedErrTrend, errAddon: parsedErrAddon, rates, installs: parsedInstalls, opens: parsedOpens, updates }
       setAlerts(newAlerts)
       setD(finalD)
       if (!errored) dashCache.set(cacheKey, { d: finalD, alerts: newAlerts })  // cache for instant SWR
@@ -302,7 +306,8 @@ export default function Dashboard({ section }) {
             <KPICard label="Downloads" value={d.kpis?.downloads} icon={Download} iconBg="rgba(34,197,94,.12)" iconColor="#22c55e" trend={d.kpis?.trends?.downloads?.label} trendDir={d.kpis?.trends?.downloads?.dir} delay={.05} sparkData={d.dlTrend?.slice(-8).map(r=>r.n)} />
             <KPICard label="Favourites" value={d.kpis?.favourites} icon={Heart} iconBg="rgba(245,158,11,.12)" iconColor="#f59e0b" trend={d.kpis?.trends?.favourites?.label} trendDir={d.kpis?.trends?.favourites?.dir} delay={.1} sparkData={d.favTrend?.slice(-8).map(r=>r.n)} />
             <KPICard label="Addon installs" value={d.kpis?.installs} icon={Package} iconBg="rgba(56,189,248,.12)" iconColor="#38bdf8" trend={d.kpis?.trends?.installs?.label} trendDir={d.kpis?.trends?.installs?.dir} delay={.15} sparkData={d.installs?.slice(-8).map(r=>r.n)} />
-            <KPICard label="Error rate" value={d.kpis?.errorRate} icon={AlertTriangle} iconBg="rgba(239,68,68,.12)" iconColor="#ef4444" format="decimal" trend={parseFloat(d.kpis?.errorRate) > 1 ? 'Spike detected' : 'Stable'} trendDir={parseFloat(d.kpis?.errorRate) > 1 ? 'down' : 'up'} delay={.2} />
+            <KPICard label="Addon opens" value={d.kpis?.opens} icon={Activity} iconBg="rgba(168,85,247,.12)" iconColor="#a855f7" trend={d.kpis?.trends?.opens?.label} trendDir={d.kpis?.trends?.opens?.dir} delay={.2} sparkData={d.opens?.slice(-8).map(r=>r.n)} />
+            <KPICard label="Error rate" value={d.kpis?.errorRate} icon={AlertTriangle} iconBg="rgba(239,68,68,.12)" iconColor="#ef4444" format="decimal" trend={parseFloat(d.kpis?.errorRate) > 1 ? 'Spike detected' : 'Stable'} trendDir={parseFloat(d.kpis?.errorRate) > 1 ? 'down' : 'up'} delay={.25} />
           </div>
 
         </>
@@ -533,14 +538,38 @@ export default function Dashboard({ section }) {
               />
             </div>
             <div className="card ani-up s2">
-              <CardTitle badge="license events">License: activated vs expired</CardTitle>
-              {d.licTrend?.length ? (
-                <BarChart
-                  data={d.licTrend}
-                  xKey="week" yKey="activated"
-                  height={200} label="Activations" color="#22c55e"
+              <CardTitle badge="account_login">Logins vs Signups</CardTitle>
+              {d.acctTrend?.length ? (
+                <MultiLineChart
+                  labels={d.acctTrend.map(r => r.week)}
+                  datasets={[
+                    { label: 'Logins',  data: d.acctTrend.map(r => r.logins) },
+                    { label: 'Signups', data: d.acctTrend.map(r => r.signups) },
+                  ]}
+                  height={200}
+                  legend
                 />
               ) : <AreaChart data={d.installs || []} color="#22c55e" label="Installs" height={200} />}
+            </div>
+          </div>
+          <div style={GRIDS.g3}>
+            <div className="card ani-up">
+              <CardTitle badge="session_started · plan">Plan distribution</CardTitle>
+              {d.planDist?.length ? (
+                <DonutChart data={d.planDist} height={200} />
+              ) : <div style={{ color: 'var(--text-3)', fontSize: 11, textAlign: 'center', padding: '20px 0' }}>No plan data</div>}
+            </div>
+            <div className="card ani-up s1">
+              <CardTitle badge="addon_opened · every launch">Addon opens</CardTitle>
+              {d.opens?.length ? (
+                <AreaChart data={d.opens} color="#a855f7" label="Opens" height={200} />
+              ) : <div style={{ color: 'var(--text-3)', fontSize: 11, textAlign: 'center', padding: '20px 0' }}>No open data yet</div>}
+            </div>
+            <div className="card ani-up s2">
+              <CardTitle badge="addon_installed · first run">New installs</CardTitle>
+              {d.installs?.length ? (
+                <AreaChart data={d.installs} color="#38bdf8" label="Installs" height={200} />
+              ) : <div style={{ color: 'var(--text-3)', fontSize: 11, textAlign: 'center', padding: '20px 0' }}>No install data yet</div>}
             </div>
           </div>
         </>
@@ -654,7 +683,7 @@ export default function Dashboard({ section }) {
                   { label: 'Download', val: d.rates?.download },
                   { label: 'Import',   val: d.rates?.import },
                   { label: 'Search',   val: d.rates?.search },
-                  { label: 'License',  val: d.rates?.license },
+                  { label: 'Premium',  val: d.rates?.premium },
                 ].map((h, i) => {
                   const hasVal = h.val != null
                   const ok = hasVal && parseFloat(h.val) > 95

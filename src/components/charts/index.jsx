@@ -131,12 +131,19 @@ export function DonutChart({ data = [], height = 170, cutout = '68%' }) {
   )
 }
 
-export function MultiLineChart({ datasets = [], labels = [], height = 180 }) {
+export function MultiLineChart({ datasets = [], labels = [], height = 180, legend = false }) {
   const ref = useRef()
   const chart = useRef()
   useEffect(() => {
     if (!ref.current) return
     chart.current?.destroy()
+    const opts = base()
+    if (legend) {
+      opts.plugins.legend = {
+        display: true, position: 'top', align: 'end',
+        labels: { color: '#94a3b8', font: { size: 10, family: 'DM Sans' }, usePointStyle: true, boxWidth: 8, boxHeight: 8, padding: 12 },
+      }
+    }
     chart.current = new Chart(ref.current, {
       type: 'line',
       data: {
@@ -147,9 +154,9 @@ export function MultiLineChart({ datasets = [], labels = [], height = 180 }) {
           backgroundColor: 'transparent', tension: .4, pointRadius: 0,
         }))
       },
-      options: base(),
+      options: opts,
     })
     return () => chart.current?.destroy()
-  }, [datasets, labels])
+  }, [datasets, labels, legend])
   return <div style={{ position: 'relative', height }}><canvas ref={ref} aria-label="Multi-line chart" /></div>
 }

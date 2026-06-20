@@ -120,22 +120,35 @@ export async function getOverviewKPIs(addon, range) {
       countIf(event = 'addon_installed' AND ${w.cur}) as installs,
       countIf(event = 'addon_installed' AND ${w.prev}) as installs_prev,
       countIf(event IN ('download_failed','import_failed') AND ${w.cur}) as errors,
-      countIf(event IN ('asset_downloaded','asset_imported') AND ${w.cur}) as total_actions
+      countIf(event IN ('asset_downloaded','asset_imported') AND ${w.cur}) as total_actions,
+      countIf(event = 'addon_opened' AND ${w.cur}) as opens,
+      countIf(event = 'addon_opened' AND ${w.prev}) as opens_prev
     FROM events WHERE properties.addon_name = '${addon}' AND ${w.union}
   `)
   const r = rows[0] || []
   const n = i => Number(r[i] || 0)
-  const wau = n(0), downloads = n(2), favourites = n(4), installs = n(6), errors = n(8), actions = n(9)
+  const wau = n(0), downloads = n(2), favourites = n(4), installs = n(6), errors = n(8), actions = n(9), opens = n(10)
   return {
-    wau, downloads, favourites, installs,
+    wau, downloads, favourites, installs, opens,
     errorRate: actions > 0 ? ((errors / actions) * 100).toFixed(1) : '0.0',
     trends: {
       wau:        delta(wau, n(1)),
       downloads:  delta(downloads, n(3)),
       favourites: delta(favourites, n(5)),
       installs:   delta(installs, n(7)),
+      opens:      delta(opens, n(11)),
     },
   }
+}
+
+// Addon opens (launches) per day — every addon launch fires addon_opened, so this is the raw
+// "how often is the addon opened" trend (vs DAU which counts unique users via session_started).
+export async function getOpensTrend(addon, days) {
+  return hql(`
+    SELECT toDate(timestamp) as day, count() as n
+    FROM events WHERE event = 'addon_opened' AND ${where(addon, days)}
+    GROUP BY day ORDER BY day ASC
+  `)
 }
 
 export async function getTopAssets(addon, days) {
@@ -233,15 +246,33 @@ export async function getSessionsByDOW(addon, days) {
   `)
 }
 
-export async function getLicenseTrend(addon, days) {
+// Weekly account activity from the new Logto login system. The addon emits
+// account_login with a boolean `register` property (true = signup, false = login).
+export async function getAccountTrend(addon, days) {
   return hql(`
     SELECT
       toStartOfWeek(timestamp) as week,
-      countIf(event = 'license_activated') as activated,
-      countIf(event = 'license_expired') as expired
+      countIf(event = 'account_login' AND toString(properties.register) = 'true') as signups,
+      countIf(event = 'account_login' AND toString(properties.register) != 'true') as logins
     FROM events
-    WHERE event IN ('license_activated','license_expired') AND ${where(addon, days)}
+    WHERE event = 'account_login' AND ${where(addon, days)}
     GROUP BY week ORDER BY week ASC
+  `)
+}
+
+// Latest plan per user (argMax over the most recent session/login) bucketed into
+// Free / Pro / Studio / Studio Team — mirrors getVersionDistribution's per-distinct_id pattern.
+// Order matters: 'Studio Team%' must be checked BEFORE 'Studio%' (it also starts with "Studio").
+export async function getPlanDistribution(addon, range) {
+  return hql(`
+    SELECT plan, count() as users FROM (
+      SELECT distinct_id, multiIf(p LIKE 'Studio Team%', 'Studio Team', p LIKE 'Studio%', 'Studio', p LIKE 'Pro%', 'Pro', 'Free') as plan FROM (
+        SELECT distinct_id, argMax(toString(properties.plan), timestamp) as p
+        FROM events
+        WHERE event IN ('session_started','account_login') AND ${where(addon, range)}
+        GROUP BY distinct_id
+      )
+    ) GROUP BY plan ORDER BY users DESC
   `)
 }
 
@@ -365,8 +396,8 @@ export async function getSuccessRates(addon, days) {
       countIf(event = 'import_failed') as imp_fail,
       countIf(event IN ('search_performed','asset_searched')) as s_total,
       countIf(event IN ('search_performed','asset_searched') AND toFloatOrDefault(toString(properties.results_count), 0) > 0) as s_ok,
-      countIf(event = 'license_activated') as lic_act,
-      countIf(event = 'license_expired') as lic_exp
+      countIf(event = 'session_started' AND toString(properties.is_premium) = 'true') as premium_sessions,
+      countIf(event = 'session_started') as total_sessions
     FROM events WHERE ${where(addon, days)}
   `)
   const r = rows[0] || []
@@ -378,7 +409,7 @@ export async function getSuccessRates(addon, days) {
     download: rate(dlOk, dlOk + dlFail),
     import:   rate(impOk, impOk + impFail),
     search:   rate(n(5), n(4)),            // % of searches that returned results
-    license:  rate(n(6), n(6) + n(7)),     // activated / (activated + expired)
+    premium:  rate(n(6), n(7)),            // premium sessions / total sessions
   }
 }
 
